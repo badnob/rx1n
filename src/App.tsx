@@ -10,7 +10,7 @@ import ConnectButtons from './components/ConnectButtons';
 import TokenCard from './components/TokenCard';
 import TokenSelect from './components/TokenSelect';
 import { useTokenMetadata } from './hooks/useTokenMetadata';
-import { executeBatchedAirdrop } from './lib/airdropLogic';
+import { executeBatchedAirdrop, BatchResult } from './lib/airdropLogic';
 import { getTokenAccounts } from './lib/getTokenAccounts';
 import { fetchTokenMetadata } from './lib/metadataFetcher';
 import {
@@ -49,6 +49,26 @@ export default function App({ network, setNetwork }: AppProps) {
   const [batchProgress, setBatchProgress] = useState<number | null>(null);
   // Prevents double-triggering the airdrop while one is already running
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // ── Transaction log ──────────────────────────────────────────────────────────
+  interface TxRecord {
+    batch: number;
+    timestamp: string;
+    amountPerRecipient: number;
+    symbol: string;
+    mint: string;
+    network: string;
+    result: BatchResult;
+  }
+  const [txLog, setTxLog] = useState<TxRecord[]>([]);
+  const [airdropComplete, setAirdropComplete] = useState(false);
+
+  // Tracks all-PDA batches that were fully skipped (no charge)
+  interface PdaSkipRecord {
+    batch: number;
+    addresses: string[];
+  }
+  const [pdaSkipLog, setPdaSkipLog] = useState<PdaSkipRecord[]>([]);
 
   // ── Cost calculator ──────────────────────────────────────────────────────────
   const [estimatedHolders, setEstimatedHolders] = useState<number>(0);
@@ -186,7 +206,8 @@ export default function App({ network, setNetwork }: AppProps) {
         }
       }
 
-      const validHolders: string[] = [];
+      // Parse accounts into { owner, uiAmount } pairs for sorting
+      const holderMap = new Map<string, number>();
       for (const a of accounts || []) {
         try {
           const parsedData = (a.account.data as any)?.parsed?.info;
@@ -196,28 +217,38 @@ export default function App({ network, setNetwork }: AppProps) {
             typeof parsedData.owner === 'string' &&
             parsedData.owner.length > 30
           ) {
-            validHolders.push(parsedData.owner);
+            const owner = parsedData.owner as string;
+            const amount = parsedData.tokenAmount.uiAmount as number;
+            // Keep the highest balance if owner has multiple ATAs
+            if (!holderMap.has(owner) || holderMap.get(owner)! < amount) {
+              holderMap.set(owner, amount);
+            }
           }
         } catch {
           try {
             if (Buffer.isBuffer(a.account.data)) {
               const bufferSlice = a.account.data.slice(32, 64);
               if (bufferSlice.length === 32) {
-                validHolders.push(new PublicKey(bufferSlice).toBase58());
+                const owner = new PublicKey(bufferSlice).toBase58();
+                if (!holderMap.has(owner)) holderMap.set(owner, 0);
               }
             }
           } catch {}
         }
       }
 
-      // Filter out off-curve addresses (PDAs) — they cannot own ATAs
-      const onCurveHolders = [...new Set(validHolders)].filter((addr) => {
-        try {
-          return PublicKey.isOnCurve(new PublicKey(addr).toBytes());
-        } catch {
-          return false;
-        }
-      });
+      // Sort highest balance first, then filter out any unparseable addresses
+      const onCurveHolders = [...holderMap.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([owner]) => owner)
+        .filter((addr) => {
+          try {
+            new PublicKey(addr); // just validate it parses — X1 addresses are valid even if isOnCurve returns false
+            return true;
+          } catch {
+            return false;
+          }
+        });
 
       if (onCurveHolders.length === 0) {
         setStatus('No active holders found. Is the mint address correct?');
@@ -225,13 +256,16 @@ export default function App({ network, setNetwork }: AppProps) {
         return;
       }
 
-      const truncated = onCurveHolders.length > MAX_HOLDERS;
-      const finalHolders = onCurveHolders.slice(0, MAX_HOLDERS);
+      // Respect the user's estimated holder count as a hard cap
+      const userCap = estimatedHolders > 0 ? estimatedHolders : MAX_HOLDERS;
+      const cap = Math.min(userCap, MAX_HOLDERS);
+      const truncated = onCurveHolders.length > cap;
+      const finalHolders = onCurveHolders.slice(0, cap);
       setHolders(finalHolders);
       setRemainingHolders(finalHolders);
       setStatus(
         truncated
-          ? `Found ${onCurveHolders.length.toLocaleString()} holders — loaded first ${MAX_HOLDERS.toLocaleString()}.`
+          ? `Found ${onCurveHolders.length.toLocaleString()} holders — sending to first ${cap.toLocaleString()} as estimated.`
           : `Found ${finalHolders.length} active holders.`
       );
       setActiveStep(2);
@@ -251,6 +285,8 @@ export default function App({ network, setNetwork }: AppProps) {
 
     setIsProcessing(true);
     setBatchProgress(0);
+    setAirdropComplete(false);
+    setTxLog([]);
     setStatus('Preparing batches... Please do not close the window.');
 
     // Work on a stable copy of the list for this run
@@ -258,6 +294,9 @@ export default function App({ network, setNetwork }: AppProps) {
     const totalHolders = remaining.length;
     const totalBatches = Math.ceil(totalHolders / CHUNK_SIZE);
     let batchIndex = 0;
+    const sessionLog: TxRecord[] = [];
+    const sessionPdaSkips: PdaSkipRecord[] = [];
+    setPdaSkipLog([]);
 
     try {
       // Process one chunk at a time using while + slice(0, CHUNK_SIZE)
@@ -267,7 +306,7 @@ export default function App({ network, setNetwork }: AppProps) {
         batchIndex++;
         const batchLabel = `${batchIndex} of ${totalBatches}`;
 
-        await executeBatchedAirdrop(
+        const result = await executeBatchedAirdrop(
           connection,
           wallet,
           sendTransaction,
@@ -278,6 +317,28 @@ export default function App({ network, setNetwork }: AppProps) {
           setStatus,
           batchLabel
         );
+
+        // Only record batches that actually sent — skip nulls / empty / malformed results
+        const sentCount = result?.recipientsSent?.length ?? 0;
+        if (sentCount === 0) {
+          // No tokens were sent — log as PDA-skipped batch (user not charged)
+          const skippedAddresses: string[] = result?.recipientsSkipped ?? chunk;
+          const pdaRecord: PdaSkipRecord = { batch: batchIndex, addresses: skippedAddresses };
+          sessionPdaSkips.push(pdaRecord);
+          setPdaSkipLog([...sessionPdaSkips]);
+        } else if (sentCount > 0) {
+          const record: TxRecord = {
+            batch: batchIndex,
+            timestamp: new Date().toISOString(),
+            amountPerRecipient: parseFloat(dropAmount),
+            symbol: selectedToken.symbol,
+            mint: selectedToken.mint,
+            network,
+            result,
+          };
+          sessionLog.push(record);
+          setTxLog([...sessionLog]);
+        }
 
         // Advance the remaining list
         remaining = remaining.slice(CHUNK_SIZE);
@@ -303,10 +364,13 @@ export default function App({ network, setNetwork }: AppProps) {
       }
 
       setBatchProgress(100);
-      setStatus('Airdrop complete! All holders processed.');
       setIsResuming(false);
       localStorage.removeItem(`xender_remaining_${validatedMintString}`);
       setTimeout(() => setBatchProgress(null), 4000);
+      // Set complete AFTER all state is stable
+      setAirdropComplete(true);
+      setStatus('Airdrop complete! All holders processed.');
+
     } catch (error: any) {
       console.error('Airdrop batch error:', error);
       setBatchProgress(null);
@@ -357,7 +421,7 @@ export default function App({ network, setNetwork }: AppProps) {
           <div className="flex items-center justify-center gap-4 mt-5">
             <a href="https://x1nerator.xyz" target="_blank" rel="noopener noreferrer" className="text-[#00ff41] hover:underline text-xs font-bold">🔥 Burn</a>
             <span className="text-[#003300]">|</span>
-            <a href="https://github.com/badnob" target="_blank" rel="noopener noreferrer" className="text-[#00ff41] hover:underline text-xs font-bold">💻 Git</a>
+            <a href="https://github.com/badnob" target="_blank" rel="noopener noreferrer" className="text-[#00ff41] hover:underline text-xs font-bold">⚡ Git</a>
             <span className="text-[#003300]">|</span>
             <a href="https://t.me/rx1ndrop" target="_blank" rel="noopener noreferrer" className="text-[#00ff41] hover:underline text-xs font-bold">✈️ Gram</a>
           </div>
@@ -380,7 +444,7 @@ export default function App({ network, setNetwork }: AppProps) {
           {!costLocked && (
             <div className="mb-12 p-6 border border-[#004400] bg-black/80 backdrop-blur-sm shadow-[0_0_15px_rgba(0,255,65,0.15)]">
               <h2 className="text-xl font-black text-[#00ff41] mb-4 tracking-widest">
-                &gt; COST CALCULATOR – ADVISED
+                &gt; RECIPIENTS & COST
               </h2>
 
               <input
@@ -390,7 +454,7 @@ export default function App({ network, setNetwork }: AppProps) {
                 onChange={(e) =>
                   setEstimatedHolders(Math.max(0, parseInt(e.target.value) || 0))
                 }
-                placeholder="estimated number of recipients"
+                placeholder="max number of recipients to send to"
                 className="w-full bg-[#000a00] border border-[#004400] p-4 text-[#00ff41] font-mono focus:border-[#00ff41] mb-6"
               />
 
@@ -656,7 +720,14 @@ export default function App({ network, setNetwork }: AppProps) {
 
                     {/* Primary action button */}
                     <button
-                      onClick={handleAirdrop}
+                      onClick={() => {
+                        if (airdropComplete) {
+                          // Trigger the export download directly
+                          document.getElementById('rx1n-export-btn')?.click();
+                        } else {
+                          handleAirdrop();
+                        }
+                      }}
                       disabled={isProcessing}
                       className={`w-full mt-4 p-4 font-black ${styles.neonButton} !text-lg ${
                         isProcessing
@@ -666,6 +737,8 @@ export default function App({ network, setNetwork }: AppProps) {
                     >
                       {isProcessing
                         ? 'PROCESSING...'
+                        : airdropComplete
+                        ? 'DWNLD_RCPT'
                         : remainingHolders.length > 0 && isResuming
                         ? 'KEEP_RX1NING'
                         : 'MAKE_IT_RX1N'}
@@ -682,6 +755,68 @@ export default function App({ network, setNetwork }: AppProps) {
           <div className="m-5 mt-2 p-3 bg-black text-xs text-[#00ff41] font-mono border border-[#00ff41] break-words flex items-start gap-2 shadow-[0_0_8px_rgba(0,255,65,0.3)]">
             <span className="mt-0.5 animate-pulse">_&gt;</span>
             <span>{status}</span>
+          </div>
+        )}
+
+        {/* Export button — shown after airdrop completes (even if all batches were PDA-skipped) */}
+        {airdropComplete && (txLog.length > 0 || pdaSkipLog.length > 0) && (
+          <div className="mx-5 mb-5">
+            <button
+              onClick={() => {
+                const report = {
+                  title: 'RX1NDROP REPORT',
+                  generated: new Date().toUTCString(),
+                  batches: txLog.map((r) => ({
+                    batch: r.batch,
+                    txn_hash: r.result?.signature ?? '',
+                    explorer: `https://explorer.${network === 'testnet' ? 'testnet' : 'mainnet'}.x1.xyz/tx/${r.result?.signature ?? ''}`,
+                    recipients: (r.result?.recipientsSent ?? []).map((addr, i) => ({
+                      [`wallet_${i + 1}`]: addr,
+                    })),
+                    fees: {
+                      network_fee: `${r.result?.networkFeeXNT ?? 0} XNT  — paid to validators`,
+                      dev_fee: `${r.result?.devFeeXNT ?? 0} XNT  — paid to RX1N`,
+                      ata_rent: `${r.result?.ataRentXNT ?? 0} XNT  — new token accounts opened`,
+                      batch_total: `${r.result?.totalXNTSpent ?? 0} XNT`,
+                    },
+                  })),
+                  totals: {
+                    network_fees: `${parseFloat(txLog.reduce((s, r) => s + (r.result?.networkFeeXNT ?? 0), 0).toFixed(9))} XNT`,
+                    dev_fees: `${parseFloat(txLog.reduce((s, r) => s + (r.result?.devFeeXNT ?? 0), 0).toFixed(9))} XNT`,
+                    ata_rent: `${parseFloat(txLog.reduce((s, r) => s + (r.result?.ataRentXNT ?? 0), 0).toFixed(9))} XNT`,
+                    total_spent: `${parseFloat(txLog.reduce((s, r) => s + (r.result?.totalXNTSpent ?? 0), 0).toFixed(9))} XNT`,
+                    total_recipients: txLog.reduce((s, r) => s + (r.result?.recipientsSent?.length ?? 0), 0),
+                    total_batches: txLog.length,
+                  },
+                };
+
+                const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `rx1n-airdrop-${Date.now()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              id="rx1n-export-btn"
+              className="hidden"
+            >
+              ⬇ EXPORT_TRANSACTION_LOG()
+            </button>
+            {txLog.length > 0 && (
+              <p className="text-[10px] text-[#00aa22] font-mono text-center mt-2 tracking-widest">
+                {txLog.length} BATCHES
+                &nbsp;·&nbsp;{txLog.reduce((s, r) => s + (r.result?.recipientsSent?.length ?? 0), 0)} SENT
+                &nbsp;·&nbsp;{txLog.reduce((s, r) => s + (r.result?.totalXNTSpent ?? 0), 0).toFixed(6)} XNT TOTAL COST
+              </p>
+            )}
+            {pdaSkipLog.length > 0 && (
+              <p className="text-[10px] text-[#ffaa00] font-mono text-center mt-1 tracking-widest">
+                ⚠ {pdaSkipLog.reduce((s, r) => s + r.addresses.length, 0)} PDA ADDRESS
+                {pdaSkipLog.reduce((s, r) => s + r.addresses.length, 0) !== 1 ? 'ES' : ''} SKIPPED
+                &nbsp;·&nbsp;NOT CHARGED
+              </p>
+            )}
           </div>
         )}
       </div>
