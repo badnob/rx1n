@@ -1,0 +1,103 @@
+/* src/page.module.css */
+
+.matrixBg {
+  background-color: #000000;
+  font-family: 'Courier New', Courier, monospace !important;
+  color: #00ff41;
+  /* Faint static X logo background just for texture */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2300ff41' fill-opacity='0.03'%3E%3Cpath d='M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z'/%3E%3C/svg%3E");
+  background-size: 150px 150px;
+}
+
+.scanlines {
+  position: fixed;
+  top: 0; left: 0; width: 100vw; height: 100vh;
+  background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.2) 50%, rgba(0,0,0,0.2));
+  background-size: 100% 4px;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.neonContainer {
+  background: rgba(0, 5, 0, 0.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid #00ff41;
+  animation: terminalStrobe 4s infinite;
+}
+
+@keyframes terminalStrobe {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(0, 255, 65, 0.1), inset 0 0 10px rgba(0, 255, 65, 0.05);
+    border-color: #00aa22;
+  }
+  40% {
+    box-shadow: 0 0 25px rgba(0, 255, 65, 0.3), inset 0 0 15px rgba(0, 255, 65, 0.1);
+    border-color: #00ff41;
+  }
+  45% {
+    box-shadow: 0 0 45px rgba(0, 255, 65, 0.6), inset 0 0 25px rgba(0, 255, 65, 0.3);
+    border-color: #55ff77;
+  }
+  50% {
+    box-shadow: 0 0 25px rgba(0, 255, 65, 0.3), inset 0 0 15px rgba(0, 255, 65, 0.1);
+    border-color: #00ff41;
+  }
+}
+
+.glowText {
+  color: #00ff41;
+  text-shadow: 0 0 8px rgba(0, 255, 65, 0.6);
+}
+
+.neonInput {
+  background: #000a00 !important;
+  color: #00ff41 !important;
+  border: 1px solid #004400 !important;
+  transition: all 0.2s ease;
+}
+
+.neonInput:focus {
+  border-color: #00ff41 !important;
+  box-shadow: 0 0 10px rgba(0, 255, 65, 0.3) !important;
+  outline: none;
+}
+
+.neonInput::placeholder {
+  color: #004400;
+}
+
+.neonButton {
+  background: rgba(0, 20, 0, 0.5);
+  color: #00ff41;
+  border: 1px solid #00ff41;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  transition: all 0.2s ease;
+  box-shadow: 0 0 5px rgba(0, 255, 65, 0.2);
+}
+
+.neonButton:hover:not(:disabled) {
+  background: #00ff41;
+  color: #000000;
+  box-shadow: 0 0 20px rgba(0, 255, 65, 0.6);
+  font-weight: 900;
+}
+
+.neonButton:disabled {
+  border-color: #003300;
+  color: #003300;
+  box-shadow: none;
+  background: transparent;
+  cursor: not-allowed;
+}
+
+.stepWrapper {
+  background: #000500;
+  border: 1px solid #003300;
+  transition: all 0.3s;
+}
+
+.stepWrapperActive {
+  border: 1px solid #00ff41;
+  box-shadow: 0 0 10px rgba(0, 255, 65, 0.1);
+}
