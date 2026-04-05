@@ -168,7 +168,7 @@ export default function App({ network, setNetwork }: AppProps) {
       const cleanMintStr = rawString.replace(/[\\s\\uFEFF\\xA0]+/g, '').trim();
 
       if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(cleanMintStr)) {
-        setStatus('Error: Invalid Solana address. Ensure no special characters are present.');
+        setStatus('Error: Invalid X1 address. Ensure no special characters are present.');
         return;
       }
 
@@ -399,20 +399,7 @@ export default function App({ network, setNetwork }: AppProps) {
           </select>
         </div>
 
-        {/* Follow us on X (positioned to left of title) */}
-        <div className="absolute top-4 left-16 text-[10px] text-[#00aa22] font-mono tracking-widest z-20">
-          Follow us on X @
-          <a
-            href="https://x.com/rx1ndrop"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[#00ff41] hover:bg-[#00ff41] hover:text-black px-1 transition-all border border-transparent hover:border-[#00ff41] font-bold"
-          >
-            rx1ndrop
-          </a>
-        </div>
-
-        {/* Header */}
+        {/* Header with linked title */}
         <div className="p-6 text-center relative">
           <h1 className="mx-auto">
             <a
