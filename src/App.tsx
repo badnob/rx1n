@@ -403,14 +403,7 @@ export default function App({ network, setNetwork }: AppProps) {
 
         {/* Author tag */}
         <div className="absolute top-4 right-4 text-[10px] text-[#00aa22] font-mono tracking-widest z-20">
-          // by{' '}
-          <a
-            href="https://t.me/ironmanmk2"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[#00ff41] hover:bg-[#00ff41] hover:text-black px-1 transition-all border border-transparent hover:border-[#00ff41] font-bold"
-          >
-            tony
+          // by tony
           </a>
         </div>
 
