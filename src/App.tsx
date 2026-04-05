@@ -414,7 +414,7 @@ tony
 {/* Header */}
 <div className="p-6 text-center relative">
 <h1 className={`text-4xl font-black tracking-widest ${styles.glowText} mx-auto`}>
-<a href="https://x.com/rx1ndrop" target="_blank" rel="noopener noreferrer">>>>RX1N<<<</a>
+<a href="https://x.com/rx1ndrop" target="_blank" rel="noopener noreferrer">RX1N</a>
 </h1>
 <p className="text-xs text-[#00aa22] mt-2 font-bold tracking-[0.3em]">FETCH & DROP PROTOCOL</p>
 <div className="flex items-center justify-center gap-4 mt-5">
